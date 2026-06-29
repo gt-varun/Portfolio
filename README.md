@@ -1,4 +1,4 @@
-# Yamin Hossain — Portfolio (Clean Static Build)
+Portfolio (Clean Static Build)
 
 A framework-free, production-ready static rebuild of the portfolio site,
 recovered and sanitised from a deployed Next.js scrape. No build step, no
