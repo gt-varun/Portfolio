@@ -1,0 +1,104 @@
+/* ------------------------------------------------------------------ *
+ * custom.css — hand-authored layer added during the static rebuild.
+ *
+ * The original site used framer-motion for whileInView entrance animations
+ * and a JS-drawn custom cursor. The framework runtime was removed, so this
+ * file (with main.js) re-implements both with zero dependencies, plus the
+ * mobile-navigation and hero-background styles.
+ * ------------------------------------------------------------------ */
+
+/* ---- 1. Scroll-reveal entrance animations ------------------------ *
+ * build_clean.py converts each framer start-state into a [data-reveal]
+ * element carrying its original "from" transform in data-reveal-from.
+ * The `.js` class is added pre-paint by an inline bootstrap script, so the
+ * hidden start-state only applies when JS is present (no flash, and the
+ * content is fully visible if JS is disabled).                          */
+.js [data-reveal] {
+  opacity: 0;
+  transition:
+    opacity 0.7s cubic-bezier(0.22, 0.61, 0.36, 1),
+    transform 0.7s cubic-bezier(0.22, 0.61, 0.36, 1);
+  will-change: opacity, transform;
+}
+.js [data-reveal].is-visible {
+  opacity: 1;
+  transform: none !important;
+}
+
+/* Reduced-motion users and the fail-open fallback: show everything, no anim. */
+@media (prefers-reduced-motion: reduce) {
+  .js [data-reveal] {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
+  }
+}
+.reveal-fallback [data-reveal] {
+  opacity: 1 !important;
+  transform: none !important;
+}
+
+/* ---- 2. Custom cursor -------------------------------------------- *
+ * Rendered by main.js only on fine-pointer devices. The OS cursor is hidden
+ * via the .custom-cursor-active class (added by JS) so it is never lost when
+ * JS is off or on a touch device.                                       */
+.custom-cursor-active,
+.custom-cursor-active * {
+  cursor: none !important;
+}
+.cursor-dot,
+.cursor-ring {
+  position: fixed;
+  top: 0;
+  left: 0;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 99999;
+  transform: translate(-50%, -50%);
+  mix-blend-mode: difference;
+}
+.cursor-dot {
+  width: 8px;
+  height: 8px;
+  background: #ef4444;
+}
+.cursor-ring {
+  width: 36px;
+  height: 36px;
+  border: 1.5px solid rgba(239, 68, 68, 0.6);
+  transition:
+    width 0.25s ease,
+    height 0.25s ease,
+    background-color 0.25s ease,
+    border-color 0.25s ease;
+}
+.cursor-ring.is-hovering {
+  width: 56px;
+  height: 56px;
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.9);
+}
+
+/* ---- 3. Mobile navigation panel ---------------------------------- */
+@media (max-width: 767px) {
+  [data-mobile-panel] {
+    overflow: hidden;
+    max-height: 0;
+    opacity: 0;
+    visibility: hidden;
+    transition:
+      max-height 0.3s ease,
+      opacity 0.3s ease,
+      visibility 0.3s;
+  }
+  [data-mobile-panel].is-open {
+    max-height: 75vh;
+    opacity: 1;
+    visibility: visible;
+  }
+}
+
+/* ---- 4. Hero background cross-fade -------------------------------- */
+.bg-frame {
+  transition: opacity 0.4s linear;
+}

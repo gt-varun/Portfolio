@@ -1,0 +1,353 @@
+#!/usr/bin/env python3
+"""
+Sanitization / re-architecting build for the scraped Next.js portfolio.
+Produces a clean, framework-free static site in ./client-build.
+"""
+import os, re, glob, shutil, subprocess, urllib.parse
+from collections import defaultdict
+
+SRC = os.path.dirname(os.path.abspath(__file__))
+OUT = os.path.join(SRC, "client-build")
+
+# ---- fresh output tree -------------------------------------------------
+if os.path.exists(OUT):
+    shutil.rmtree(OUT)
+for d in ["css", "js", "assets/images", "assets/fonts", "assets/icons", "assets/background"]:
+    os.makedirs(os.path.join(OUT, d), exist_ok=True)
+
+def detect_ext(path):
+    out = subprocess.run(["file", "-b", path], capture_output=True, text=True).stdout
+    if "JPEG" in out: return "jpg"
+    if "PNG" in out:  return "png"
+    if "WebP" in out or "Web/P" in out: return "webp"
+    if "GIF" in out:  return "gif"
+    return "img"
+
+def slugify(name):
+    name = os.path.splitext(name)[0]
+    name = re.sub(r"[^A-Za-z0-9]+", "-", name).strip("-").lower()
+    return name
+
+# ---- 1. collect optimized images, pick largest variant per base --------
+variants = defaultdict(list)  # base_decoded -> [(w, path)]
+for p in glob.glob(os.path.join(SRC, "_next", "image?url=*")):
+    fn = os.path.basename(p)
+    m = re.match(r"image\?url=(.*?)&w=(\d+)&q=\d+$", fn)
+    if not m:
+        continue
+    base = urllib.parse.unquote(m.group(1)).lstrip("/")
+    variants[base].append((int(m.group(2)), p))
+
+image_map = {}  # decoded base filename -> clean relative asset path
+for base, vs in variants.items():
+    vs.sort()
+    _, best = vs[-1]                      # largest width = best quality
+    ext = detect_ext(best)
+    slug = slugify(base)
+    dest_rel = f"assets/images/{slug}.{ext}"
+    shutil.copy2(best, os.path.join(OUT, dest_rel))
+    image_map[base] = dest_rel
+
+# ---- 1b. recover SKILLS + PROJECTS data from the original JS bundle -----
+# The interactive widgets were data-driven; the data still lives verbatim
+# in the (minified) bundle, so we recover the real content rather than
+# fabricate it, and emit it as a clean js/data.js.
+import json as _json
+BUNDLE = open(os.path.join(SRC, "_next/static/chunks/0hjt.k911pbjz.js"), encoding="utf-8").read()
+
+def _match_array(src, anchor):
+    """Return the JS array literal text starting at `anchor`."""
+    i = src.index(anchor)
+    start = src.index("[", i)
+    depth, instr, esc = 0, None, False
+    for k in range(start, len(src)):
+        ch = src[k]
+        if instr:
+            if esc: esc = False
+            elif ch == "\\": esc = True
+            elif ch == instr: instr = None
+            continue
+        if ch in "\"'`": instr = ch
+        elif ch == "[": depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return src[start:k + 1]
+    raise ValueError("unterminated array")
+
+def _split_records(arr):
+    """Split a top-level array literal into its object-record strings."""
+    out, cur, depth, instr, esc = [], "", 0, None, False
+    for ch in arr[1:-1]:
+        if instr:
+            cur += ch
+            if esc: esc = False
+            elif ch == "\\": esc = True
+            elif ch == instr: instr = None
+            continue
+        if ch in "\"'`": instr = ch; cur += ch; continue
+        if ch == "{": depth += 1
+        elif ch == "}": depth -= 1
+        if ch == "," and depth == 0:
+            out.append(cur); cur = ""
+        else:
+            cur += ch
+    if cur.strip(): out.append(cur)
+    return [r for r in out if r.strip()]
+
+def _str(field, rec):
+    m = re.search(field + r':"((?:[^"\\]|\\.)*)"', rec)
+    return _json.loads('"' + m.group(1) + '"') if m else ""
+
+def _arr(field, rec):
+    m = re.search(field + r':\[([^\]]*)\]', rec)
+    if not m: return []
+    return [_json.loads('"' + s + '"') for s in re.findall(r'"((?:[^"\\]|\\.)*)"', m.group(1))]
+
+# skills: [{title, skills:[...]}]
+skills = []
+for rec in _split_records(_match_array(BUNDLE, '[{title:"Machine Learning",skills:[')):
+    skills.append({"title": _str("title", rec), "skills": _arr("skills", rec)})
+
+# projects: [{title, category, description, longDescription, image, tags, demoLink, codeLink}]
+projects = []
+for rec in _split_records(_match_array(BUNDLE, '[{title:"Qurany AI",category:')):
+    img = _str("image", rec).lstrip("/")
+    projects.append({
+        "title": _str("title", rec),
+        "category": _str("category", rec),
+        "description": _str("description", rec),
+        "longDescription": _str("longDescription", rec),
+        "image": image_map.get(img, f"assets/images/{slugify(img)}.png"),
+        "tags": _arr("tags", rec),
+        "demoLink": _str("demoLink", rec),
+        "codeLink": _str("codeLink", rec),
+    })
+
+data_js = (
+    "/* data.js — content recovered from the original site bundle.\n"
+    " * Consumed by main.js to drive the skills tabs and project carousel.\n"
+    " * Auto-generated by build_clean.py; edit the source data, not this file. */\n"
+    "window.SKILLS = " + _json.dumps(skills, indent=2, ensure_ascii=False) + ";\n"
+    "window.PROJECTS = " + _json.dumps(projects, indent=2, ensure_ascii=False) + ";\n"
+)
+open(os.path.join(OUT, "js/data.js"), "w", encoding="utf-8").write(data_js)
+print(f"recovered {len(skills)} skill categories, {len(projects)} projects")
+
+# ---- 2. fonts ----------------------------------------------------------
+for p in glob.glob(os.path.join(SRC, "_next", "static", "media", "*.woff2")):
+    shutil.copy2(p, os.path.join(OUT, "assets/fonts", os.path.basename(p)))
+
+# ---- 3. background frames + icons + root files -------------------------
+# Full 240-frame batman set (scroll-scrubbed canvas animation) lives in
+# static-src/batman-frames/; fall back to the 5-frame scrape if absent.
+_frame_dir = os.path.join(SRC, "static-src/batman-frames")
+if not os.path.isdir(_frame_dir):
+    _frame_dir = os.path.join(SRC, "batman_background")
+for p in glob.glob(os.path.join(_frame_dir, "*.webp")):
+    shutil.copy2(p, os.path.join(OUT, "assets/background", os.path.basename(p)))
+for svg in ["letterboxd-logo.svg", "trakt-svgrepo-com.svg"]:
+    shutil.copy2(os.path.join(SRC, svg), os.path.join(OUT, "assets/icons", svg))
+for f in ["favicon.ico", "apple-touch-icon.png", "site.webmanifest", "robots.txt"]:
+    shutil.copy2(os.path.join(SRC, f), os.path.join(OUT, f))
+
+# ---- 4. CSS ------------------------------------------------------------
+fonts_css = open(os.path.join(SRC, "_next/static/chunks/09ta51.0fd-y-.css")).read()
+fonts_css = fonts_css.replace("../media/", "../assets/fonts/")
+open(os.path.join(OUT, "css/fonts.css"), "w").write(fonts_css)
+
+styles_css = open(os.path.join(SRC, "_next/static/chunks/0.zbolqdfzafj.css")).read()
+# The original hid the OS cursor (cursor:none) and drew a custom one in JS.
+# Restore the default cursor as the baseline; main.js re-hides it only when the
+# custom cursor is active, so the pointer is never lost if JS is unavailable.
+styles_css = styles_css.replace("cursor:none", "cursor:auto")
+open(os.path.join(OUT, "css/styles.css"), "w").write(styles_css)
+
+# hand-authored sources (custom.css + main.js) are copied verbatim
+shutil.copy2(os.path.join(SRC, "static-src/css/custom.css"), os.path.join(OUT, "css/custom.css"))
+shutil.copy2(os.path.join(SRC, "static-src/js/main.js"), os.path.join(OUT, "js/main.js"))
+
+# ---- 5. HTML transform -------------------------------------------------
+html = open(os.path.join(SRC, "index.html"), encoding="utf-8").read()
+
+# 5-pre. Resolve React Suspense streaming. The page shipped a pending
+# boundary (<!--$?-->) whose *fallback* is the full-screen "INITIALIZING
+# BATCOMPUTER" preloader; the real page sits in a hidden <div id="S:0">.
+# In the live app an inline $RC(...) script swapped them — we removed that
+# script, so we replicate the swap statically: drop the fallback and reveal
+# the content.
+def reveal_suspense(h):
+    OPENS = ("<!--$-->", "<!--$?-->", "<!--$!-->")
+    CLOSE = "<!--/$-->"
+    fb_start = h.find("<!--$?-->")
+    if fb_start == -1:
+        return h
+    i, depth, fb_end = fb_start, 0, None
+    while i < len(h):
+        opens = [h.find(o, i) for o in OPENS]
+        opens = [p for p in opens if p != -1]
+        nxt_open = min(opens) if opens else None
+        nxt_close = h.find(CLOSE, i)
+        if nxt_close == -1:
+            break
+        if nxt_open is not None and nxt_open < nxt_close:
+            depth += 1
+            i = nxt_open + len(next(o for o in OPENS if h.startswith(o, nxt_open)))
+        else:
+            depth -= 1
+            i = nxt_close + len(CLOSE)
+            if depth == 0:
+                fb_end = i
+                break
+    m = re.search(r'<div hidden id="S:0">', h)
+    if not m or fb_end is None:
+        return h
+    s0_start, inner_start = m.start(), m.end()
+    d, inner_end, s0_end = 1, None, None
+    for mm in re.finditer(r'<(/?)div\b', h[inner_start:]):
+        d += -1 if mm.group(1) else 1
+        if d == 0:
+            inner_end = inner_start + mm.start()
+            s0_end = inner_start + mm.end()
+            break
+    if inner_end is None:
+        return h
+    inner = h[inner_start:inner_end]
+    return h[:fb_start] + inner + h[fb_end:s0_start] + h[s0_end:]
+
+html = reveal_suspense(html)
+# strip remaining React streaming artefacts (hidden templates + boundary comments)
+html = re.sub(r'<template[^>]*>.*?</template>', '', html, flags=re.S)
+html = re.sub(r'<!--/?\$[?!]?-->', '', html)
+
+# 5a. protect JSON-LD blocks
+ldjson = []
+def stash(m):
+    ldjson.append(m.group(0)); return f"@@LDJSON{len(ldjson)-1}@@"
+html = re.sub(r'<script type="application/ld\+json"[^>]*>.*?</script>', stash, html, flags=re.S)
+
+# 5b. drop every other <script> (bundles + __next_f hydration data)
+html = re.sub(r'<script\b[^>]*>.*?</script>', '', html, flags=re.S)
+html = re.sub(r'<script\b[^>]*/>', '', html)
+
+# 5c. drop JS preload hints
+html = re.sub(r'<link[^>]*as="script"[^>]*/>', '', html)
+
+# 5d. stylesheet links -> local clean css
+html = html.replace('_next/static/chunks/09ta51.0fd-y-.css', 'css/fonts.css')
+html = html.replace('_next/static/chunks/0.zbolqdfzafj.css', 'css/styles.css')
+html = html.replace(' data-precedence="next"', '')
+
+# 5e. fonts: _next/static/media/x.woff2 -> assets/fonts/x.woff2
+html = re.sub(r'_next/static/media/([^"\']+\.woff2)', r'assets/fonts/\1', html)
+
+# 5f. batman background -> assets/background
+html = html.replace('batman_background/', 'assets/background/')
+
+# 5f-svg. inline svg icons -> assets/icons
+for svg in ("letterboxd-logo.svg", "trakt-svgrepo-com.svg"):
+    html = html.replace(f'"{svg}"', f'"assets/icons/{svg}"')
+
+# 5f-bis. drop optional <link rel="preload" as="image"> hints. They reference
+# the image optimizer and are pure performance hints; the real <img> tags below
+# carry the content. Removing them avoids messy responsive-srcset surgery.
+html = re.sub(r'<link[^>]*rel="preload"[^>]*as="image"[^>]*/>', '', html)
+html = re.sub(r'<link[^>]*as="image"[^>]*rel="preload"[^>]*/>', '', html)
+
+# 5g. collapse responsive images to a single clean local src.
+#     Strip the React srcSet/sizes attributes, then resolve the src URL.
+html = re.sub(r'\s+(?:srcSet|imageSrcSet|sizes|imageSizes)="[^"]*"', '', html)
+def repl_img(m):
+    base = urllib.parse.unquote(urllib.parse.unquote(m.group(1))).lstrip("/")
+    return image_map.get(base, m.group(0))
+# double-encoded (as scraped): _next/image%3Furl=%252FNAME&amp;w=..&amp;q=..
+html = re.sub(r'/?_next/image%3Furl=%252F(.*?)(?:%26|&amp;|&)w=\d+(?:%26|&amp;|&)q=\d+', repl_img, html)
+# single-encoded: _next/image?url=%2FNAME&amp;w=..&amp;q=..
+html = re.sub(r'/?_next/image\?url=%2F(.*?)&(?:amp;)?w=\d+&(?:amp;)?q=\d+', repl_img, html)
+
+# 5h. Convert framer-motion initial states into scroll-reveal hooks.
+#     Each element that shipped an inline `opacity:0` (+ a translate/scale
+#     transform) was a whileInView animation start-state. We turn it into a
+#     [data-reveal] element that preserves its original "from" transform, and
+#     strip the hidden state from the inline style so it stays visible if JS is
+#     off. main.js + custom.css then replay the entrance animation on scroll.
+def to_reveal(m):
+    style = m.group(1)
+    tm = re.search(r'transform:([^;]*)', style)
+    frm = tm.group(1).strip() if tm else "none"
+    s = re.sub(r'opacity:0(?![.\d]);?', '', style)
+    s = re.sub(r'transform:[^;]*;?', '', s)
+    s = s.strip().strip(";").strip()
+    attrs = f' data-reveal data-reveal-from="{frm}"'
+    return (f'style="{s}"' + attrs) if s else attrs.lstrip()
+html = re.sub(r'style="([^"]*opacity:0(?![.\d])[^"]*)"', to_reveal, html)
+
+# 5i. restore JSON-LD
+for i, block in enumerate(ldjson):
+    html = html.replace(f"@@LDJSON{i}@@", block)
+
+# 5i-bis. clean optimizer URLs that survive inside SEO metadata / JSON-LD.
+# Social scrapers need absolute URLs, so these point at the canonical domain
+# but are stripped of the (now non-existent) Next.js image-optimizer wrapper.
+CANON = "https://www.yaminhossain.com"
+def canon_img(m):
+    name = urllib.parse.unquote(urllib.parse.unquote(m.group(1)))
+    return f"{CANON}/{name}"
+# double-encoded form: _next/image%3Furl=%252FNAME%26w=..%26q=..
+html = re.sub(r'(?:https://www\.yaminhossain\.com)?/?_next/image%3Furl=%252F(.*?)(?:%26|&amp;|&)w=\d+(?:%26|&amp;|&)q=\d+', canon_img, html)
+# single-encoded form inside metadata: _next/image?url=%2FNAME&amp;w=..&amp;q=..
+html = re.sub(r'(?:https://www\.yaminhossain\.com)?/?_next/image\?url=%2F(.*?)(?:&amp;|&|%26)w=\d+(?:&amp;|&|%26)q=\d+', canon_img, html)
+
+# 5j. wire custom css + main.js
+html = html.replace('</head>', '    <link rel="stylesheet" href="css/custom.css"/>\n  </head>')
+# Bootstrap: flag that JS is on (so reveal start-states apply pre-paint, no
+# flash) and guarantee everything becomes visible even if main.js never runs.
+_boot = ('<script>document.documentElement.classList.add("js");'
+         'setTimeout(function(){document.documentElement.classList.add("reveal-fallback")},5000);</script>')
+html = html.replace('</head>', '    ' + _boot + '\n  </head>')
+html = html.replace('</body>', '    <script src="js/data.js" defer></script>\n    <script src="js/main.js" defer></script>\n  </body>')
+
+open(os.path.join(OUT, "index.html"), "w", encoding="utf-8").write(html)
+
+# ---- 6. handoff docs (generated so they survive rebuilds) ---------------
+shutil.copy2(os.path.join(SRC, "static-src/README.md"), os.path.join(OUT, "README.md"))
+
+amap = ["# Asset Map", "",
+    "Generated by `build_clean.py`. Every original deployment asset and the clean",
+    "local path it now lives at. All references in `index.html`, the CSS, and",
+    "`js/data.js` are rewritten to these paths.", "",
+    "## Images", "",
+    "The Next.js image optimizer served each source image as up to 15 resized",
+    "variants (`&w=…&q=…`). The rebuild keeps the **single highest-quality**",
+    "variant per image.", "",
+    "| Original source (`/…`) | Variants | Width kept | Local path |",
+    "|---|---|---|---|"]
+for base in sorted(image_map):
+    n = len(variants[base]); w = sorted(variants[base])[-1][0]
+    amap.append(f"| `/{base}` | {n} | {w}px | `{image_map[base]}` |")
+amap += ["", "## Fonts", "",
+    "From `_next/static/media/` → `assets/fonts/` (referenced by `css/fonts.css`).", ""]
+for f in sorted(os.listdir(os.path.join(OUT, "assets/fonts"))):
+    fam = "Geist Mono" if f.startswith(("4fa387ec","bbc41e54","797e433a")) else "Geist"
+    amap.append(f"- `{f}` — {fam} → `assets/fonts/{f}`")
+amap += ["", "## Icons & background", "",
+    "- `letterboxd-logo.svg` → `assets/icons/letterboxd-logo.svg`",
+    "- `trakt-svgrepo-com.svg` → `assets/icons/trakt-svgrepo-com.svg`",
+    "- `batman_background/ezgif-frame-00{1..5}.webp` → `assets/background/` (hero animation)",
+    "", "## CSS / JS", "",
+    "| Original | Local |", "|---|---|",
+    "| `_next/static/chunks/0.zbolqdfzafj.css` | `css/styles.css` |",
+    "| `_next/static/chunks/09ta51.0fd-y-.css` | `css/fonts.css` |",
+    "| *(16 minified JS chunks — removed)* | `js/main.js` + `js/data.js` |",
+    "", "## Recovered data", "",
+    f"`js/data.js` holds **{len(skills)} skill categories** and **{len(projects)} projects**",
+    "extracted verbatim from the original bundle (titles, descriptions, tags, images, links).",
+    ""]
+open(os.path.join(OUT, "ASSET-MAP.md"), "w").write("\n".join(amap))
+
+# ---- report ------------------------------------------------------------
+print("IMAGE MAP")
+for base in sorted(image_map):
+    print(f"  /{base:55s} -> {image_map[base]}")
+print(f"\nimages: {len(image_map)}  fonts: 6  bg-frames: 5")
+print("written:", OUT)

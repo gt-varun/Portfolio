@@ -1,0 +1,26 @@
+{
+  "name": "Yamin Hossain | AI Systems Engineer & Data Scientist",
+  "short_name": "Yamin.ai",
+  "description": "Portfolio of Yamin Hossain - AI Systems Engineer and Data Scientist specializing in multi-agent LangGraph pipelines, RAG systems, FastAPI/Golang backends, and LLMOps.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#ef4444",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["portfolio", "technology", "business"],
+  "lang": "en",
+  "dir": "ltr"
+}

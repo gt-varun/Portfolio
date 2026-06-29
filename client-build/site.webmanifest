@@ -1,0 +1,35 @@
+{
+  "name": "Varun Y R | Full-Stack & AI Developer",
+  "short_name": "Varun YR",
+  "description": "Portfolio of Varun Y R \u2014 Full-Stack and AI Developer building production web, desktop, and AI applications.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#ef4444",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": [
+    "portfolio",
+    "technology"
+  ],
+  "lang": "en",
+  "dir": "ltr"
+}
