@@ -91,9 +91,3 @@ The deliverable is regenerated from the original scrape by `build_clean.py`
 (hand-authored sources live in `static-src/`). It localises assets, recovers
 `data.js` from the bundle, transforms the HTML, and writes `README.md` /
 `ASSET-MAP.md`. Re-run with `python3 build_clean.py`.
-
-## Domain references
-
-SEO metadata intentionally references `https://www.yaminhossain.com`. If the
-site moves, update `canonical`, `og:url`, `og:image`, `twitter:image`, and the
-JSON-LD `url`/`image` fields in `index.html`.
